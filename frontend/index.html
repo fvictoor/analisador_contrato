@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Analisador de Contratos Jurídicos</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1 class="main-title">Analisador de Contratos Jurídicos</h1>
+            <p class="subtitle">Analise seus contratos e extraia informações automaticamente</p>
+        </div>
+        <div class="upload-card">
+            <div class="card-body">
+                <h2 class="card-title">Enviar Contrato</h2>
+                <p class="card-text">Selecione um arquivo nos formatos PDF, DOC ou TXT</p>
+                <form class="upload-form" enctype="multipart/form-data">
+                    <div class="form-group file-upload">
+                        <label class="file-input-label" for="contract-file">
+                            <div class="file-label">
+                                <span class="file-label-text">Escolher arquivo</span>
+                                <span class="file-name" id="file-name">Nenhum arquivo selecionado</span>
+                            </div>
+                        </label>
+                        <input type="file" id="contract-file" name="file" accept=".pdf,.doc,.docx,.txt" class="file-input">
+                    </div>
+                    <div class="form-group">
+                        <button type="submit" class="submit-btn">
+                            <span id="btn-text">Analisar Contrato</span>
+                            <span id="spinner" class="spinner" style="display: none;"></span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <div class="result-card">
+            <div class="card-body">
+                <h2 class="card-title">Resultado da Análise</h2>
+                <div class="result-container">
+                    <div class="empty-state" id="empty-state">
+                        <span class="empty-icon">📄</span>
+                        <p class="empty-text">Nenhum contrato analisado ainda</p>
+                    </div>
+                    <pre id="result-content" class="result-content"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>

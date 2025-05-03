@@ -1,0 +1,6 @@
+
+Flask
+Flask-JWT-Extended
+python-dotenv
+openai
+PyPDF2
