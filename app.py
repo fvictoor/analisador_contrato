@@ -101,7 +101,14 @@ def _metric(value, label):
         st.metric(label=label, value=value)
 
 
-def render_analysis_sections(results: dict):
+def render_analysis_sections(
+    results: dict,
+    text: str,
+    llm: GroqLLM,
+    model: str,
+    temperature: float,
+    max_output_tokens: int,
+):
     if not results:
         st.info("Nenhum resultado para exibir.")
         return
@@ -264,12 +271,48 @@ def render_analysis_sections(results: dict):
             st.write("Análise de risco não disponível.")
 
     with tabs_by_label["Resumo jurídico"]:
-        st.subheader("Resumo jurídico (linguagem simples)")
+        st.subheader("Resumo jurídico")
         resumo = results.get("resumo_juridico", "")
         if resumo:
             st.write(resumo)
         else:
             st.write("Resumo não disponível.")
+
+        st.divider()
+        st.markdown("**Resumo detalhado (opcional)**")
+        if st.button("Gerar resumo detalhado", key="btn_resumo_detalhado", disabled=not bool(text)):
+            st.session_state["active_tab"] = "Resumo jurídico"
+            with st.spinner("Gerando resumo detalhado com IA..."):
+                try:
+                    # Montar prompt para resumo detalhado usando todo o contrato e os resultados extraídos
+                    sys_prompt = (
+                        "Você é um assistente jurídico em português. Gere um resumo detalhado do contrato, "
+                        "claro e estruturado. Inclua: obrigações de cada parte, prazos importantes, valores e multas, "
+                        "mecanismos de rescisão, garantias, foro, riscos relevantes e pontos de atenção. Evite linguagem excessivamente técnica."
+                    )
+                    user_content = (
+                        "Contrato (texto completo):\n" + (text or "") + "\n\n"
+                        "Resultados extraídos (JSON):\n" + json.dumps(results, ensure_ascii=False) + "\n\n"
+                        "Produza um texto corrido, com seções e marcadores quando útil."
+                    )
+                    messages = [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_content},
+                    ]
+                    detailed = llm.complete(
+                        messages,
+                        model=model,
+                        temperature=max(0.1, min(temperature, 0.7)),
+                        max_output_tokens=max_output_tokens,
+                    )
+                    st.session_state["resumo_detalhado"] = detailed
+                    st.success("Resumo detalhado gerado.")
+                except Exception as e:
+                    st.error(f"Falha ao gerar resumo detalhado: {e}")
+
+        if st.session_state.get("resumo_detalhado"):
+            st.markdown("**Resumo detalhado**")
+            st.write(st.session_state.get("resumo_detalhado"))
 
 
 def render_qa_section(text: str, llm: GroqLLM, model: str, temperature: float, max_output_tokens: int):
@@ -348,6 +391,7 @@ def main():
             if st.session_state.get("last_text_id") != current_text_id:
                 st.session_state["last_text_id"] = current_text_id
                 st.session_state.pop("analysis_results", None)
+                st.session_state.pop("resumo_detalhado", None)
         except Exception:
             pass
 
@@ -368,7 +412,7 @@ def main():
 
         saved_results = st.session_state.get("analysis_results")
         if saved_results:
-            render_analysis_sections(saved_results)
+            render_analysis_sections(saved_results, text, llm, model, temperature, max_output_tokens)
 
         render_qa_section(text, llm, model, temperature, max_output_tokens)
 
