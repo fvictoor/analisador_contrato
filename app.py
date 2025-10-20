@@ -5,45 +5,91 @@ import streamlit as st
 from streamlit_authenticator.utilities.exceptions import LoginError
 
 from src.text_loader import extract_text
-from src.llm_client import GroqLLM
+from src.llm_client import GroqLLM, GeminiLLM
 from src.analyzer import analyze_contract
 from src.calendar import make_ics_from_dates, make_google_links_from_dates, make_outlook_links_from_dates
 from src.rag import retrieve_relevant_chunks
 from src.auth import init_authenticator
+from src.export_pdf import generate_pdf_analysis
 
 
-st.set_page_config(page_title="Analisador de Contratos (IA - GROQ)", layout="wide")
-
-
-def get_api_key():
-    key_in_env = os.environ.get("GROQ_API_KEY", "")
-    return key_in_env
+st.set_page_config(page_title="Analisador de Contratos (IA)", layout="wide")
 
 
 def sidebar_config():
     st.sidebar.header("Configurações")
-    api_key = st.sidebar.text_input(
-        "GROQ API Key",
-        value=get_api_key(),
-        type="password",
-        help=(
-            "Informe sua chave de API da Groq. Você também pode definir a variável"
-            " de ambiente `GROQ_API_KEY`. A chave não é armazenada pelo app;"
-            " é lida apenas localmente."
-        ),
-    )
-    model = st.sidebar.selectbox(
-        "Modelo LLM",
-        options=[
+    provider = st.sidebar.selectbox("Provedor de IA", ["Groq", "Gemini"], index=0)
+
+    if provider == "Groq":
+        api_key = st.sidebar.text_input(
+            "GROQ API Key",
+            value=os.environ.get("GROQ_API_KEY", ""),
+            type="password",
+            help=(
+                "Informe sua chave de API da Groq. Você também pode definir a variável"
+                " de ambiente `GROQ_API_KEY`. A chave não é armazenada pelo app;"
+                " é lida apenas localmente."
+            ),
+        )
+        options_models = [
             "llama-3.1-8b-instant",
             "llama-3.3-70b-versatile",
             "mixtral-8x7b-32768",
-        ],
-        index=0,
-        help=(
+        ]
+        default_model = "llama-3.3-70b-versatile"
+        model_help = (
             "Modelos recomendados pela Groq. Os modelos antigos (por ex. 'llama3-8b-8192') "
             "foram descontinuados. Veja mais em https://console.groq.com/docs/deprecations."
-        ),
+        )
+    else:
+        api_key = st.sidebar.text_input(
+            "Gemini API Key",
+            value=os.environ.get("GEMINI_API_KEY", ""),
+            type="password",
+            help=(
+                "Informe sua chave de API do Gemini (Google). Você também pode definir a variável"
+                " de ambiente `GEMINI_API_KEY`. A chave não é armazenada pelo app;"
+                " é lida apenas localmente."
+            ),
+        )
+        options_models = [
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-1.5-flash",
+        ]
+        default_model = "gemini-2.5-flash-lite"
+        model_help = (
+            "Modelos Gemini (v1beta). Se ocorrer 404/not supported, tente outra variante ou use o botão de listagem."
+        )
+        try:
+            import google.generativeai as genai  # opcional
+            if api_key:
+                genai.configure(api_key=api_key)
+                if st.sidebar.button("Listar modelos disponíveis (Gemini)", help="Consulta modelos na sua conta e métodos suportados"):
+                    with st.spinner("Consultando modelos do Gemini..."):
+                        try:
+                            models = list(genai.list_models())
+                            supports = []
+                            for m in models:
+                                name = getattr(m, "name", "")
+                                methods = set(getattr(m, "supported_generation_methods", []) or [])
+                                supported = "generateContent" in methods or "generate_content" in methods
+                                supports.append((name, supported))
+                            st.sidebar.success("Modelos consultados. Veja abaixo os que suportam geração de conteúdo.")
+                            st.sidebar.markdown("**Modelos compatíveis**")
+                            for name, ok in supports:
+                                if ok:
+                                    st.sidebar.write(f"• {name}")
+                        except Exception as e:
+                            st.sidebar.error(f"Falha ao listar modelos: {e}")
+        except Exception:
+            pass
+
+    model = st.sidebar.selectbox(
+        "Modelo LLM",
+        options=options_models,
+        index=(options_models.index(default_model) if default_model in options_models else 0),
+        help=model_help,
     )
     temperature = st.sidebar.slider(
         "Temperatura",
@@ -59,21 +105,29 @@ def sidebar_config():
     )
     max_output_tokens = st.sidebar.slider(
         "Máx. tokens de saída",
-        256,
-        8000,
+        200,
+        4096,
         2000,
-        256,
+        50,
         help=(
-            "Limite de tamanho da resposta (tokens). Aumentar permite respostas mais longas"
-            " e detalhadas, mas consome mais tempo/custo. Se o limite for atingido,"
-            " a saída pode ser truncada."
+            "Limite de tokens na resposta gerada. Reduza se encontrar limites do provedor."
         ),
     )
-    return api_key, model, temperature, max_output_tokens
+    max_chunks = st.sidebar.slider(
+        "Máx. chunks para textos longos",
+        4,
+        24,
+        12,
+        1,
+        help=(
+            "Para contratos muito grandes, limita quantos trechos serão analisados para evitar limites."
+        ),
+    )
+    return provider, api_key, model, temperature, max_output_tokens, max_chunks
 
 
 def render_header():
-    st.title("Analisador de Contratos com IA (GROQ)")
+    st.title("Analisador de Contratos com IA")
     st.caption(
         "Faça upload de um contrato em PDF ou DOCX e obtenha extração de informações, detecção de cláusulas padrão e desvios, análise de risco, resumo jurídico e campo de perguntas."
     )
@@ -160,6 +214,26 @@ def render_analysis_sections(
                     st.write(f"• {r}")
             else:
                 st.write("Sem riscos destacados.")
+
+        st.divider()
+        st.subheader("Exportar análise completa")
+        resumo_por_clausulas = st.session_state.get("resumo_por_clausulas")
+        pdf_bytes = None
+        try:
+            pdf_bytes = generate_pdf_analysis(
+                results,
+                resumo_por_clausulas=resumo_por_clausulas,
+                resumo_detalhado=st.session_state.get("resumo_detalhado"),
+            )
+        except Exception as e:
+            st.warning(f"Falha ao preparar PDF: {e}")
+        st.download_button(
+            label="Baixar análise completa (PDF)",
+            data=pdf_bytes or b"",
+            file_name="analise_contrato.pdf",
+            mime="application/pdf",
+            disabled=pdf_bytes is None,
+        )
 
     with tabs_by_label["Datas de vencimento"]:
         st.subheader("Datas de vencimento")
@@ -284,16 +358,21 @@ def render_analysis_sections(
             st.session_state["active_tab"] = "Resumo jurídico"
             with st.spinner("Gerando resumo detalhado com IA..."):
                 try:
-                    # Montar prompt para resumo detalhado usando todo o contrato e os resultados extraídos
+                    # Montar prompt para resumo detalhado priorizando trechos relevantes para reduzir tokens
                     sys_prompt = (
                         "Você é um assistente jurídico em português. Gere um resumo detalhado do contrato, "
                         "claro e estruturado. Inclua: obrigações de cada parte, prazos importantes, valores e multas, "
                         "mecanismos de rescisão, garantias, foro, riscos relevantes e pontos de atenção. Evite linguagem excessivamente técnica."
                     )
+                    try:
+                        top_chunks = retrieve_relevant_chunks("Resumo detalhado do contrato", text, top_k=6)
+                        context = "\n\n".join(top_chunks)
+                    except Exception:
+                        context = (text or "")[:6000]
                     user_content = (
-                        "Contrato (texto completo):\n" + (text or "") + "\n\n"
+                        "Trechos relevantes:\n" + context + "\n\n"
                         "Resultados extraídos (JSON):\n" + json.dumps(results, ensure_ascii=False) + "\n\n"
-                        "Produza um texto corrido, com seções e marcadores quando útil."
+                        "Produza um texto corrido, com seções e marcadores quando útil, sem inventar informações não presentes."
                     )
                     messages = [
                         {"role": "system", "content": sys_prompt},
@@ -303,16 +382,100 @@ def render_analysis_sections(
                         messages,
                         model=model,
                         temperature=max(0.1, min(temperature, 0.7)),
-                        max_output_tokens=max_output_tokens,
+                        max_output_tokens=min(max_output_tokens, 1200),
                     )
                     st.session_state["resumo_detalhado"] = detailed
                     st.success("Resumo detalhado gerado.")
                 except Exception as e:
-                    st.error(f"Falha ao gerar resumo detalhado: {e}")
+                    msg = str(e)
+                    low = msg.lower()
+                    if ("rate_limit" in low) and ("tokens per day" in low or "tpd" in low):
+                        st.warning(
+                            "Limite diário de tokens atingido. Aguarde alguns minutos ou reduza o custo: "
+                            "use modelo menor, diminua os tokens de saída e o limite de chunks."
+                        )
+                    else:
+                        st.error(f"Falha ao gerar resumo detalhado: {e}")
+
+        st.markdown("**Resumo por cláusulas (objetivo)**")
+        if st.button("Gerar resumo por cláusulas", key="btn_resumo_clausulas", disabled=not bool(text)):
+            st.session_state["active_tab"] = "Resumo jurídico"
+            with st.spinner("Gerando resumo por cláusulas com IA..."):
+                try:
+                    comp = results.get("clausulas_comprometedoras", []) or []
+                    padrao = results.get("clausulas_padrao", []) or []
+
+                    sections = []
+                    # Gera um resumo por cláusula, baseado estritamente no texto da própria cláusula
+                    for c in comp:
+                        titulo = c.get("titulo") or c.get("tipo") or "Cláusula"
+                        trecho = (c.get("texto_origem") or "").strip()
+                        sys_prompt = (
+                            "Você é um analista jurídico. Resuma cada cláusula de forma OBJETIVA, "
+                            "SEM inventar informações. USE APENAS o texto fornecido da cláusula. "
+                            "Se algo não estiver no texto, escreva 'não informado'. Formato EXATO:\n"
+                            "- Obrigações: <texto>\n- Condições: <texto>\n- Penalidades: <texto>\n- Riscos: <texto>\n"
+                        )
+                        user_content = f"Cláusula: {titulo}\nTexto da cláusula:\n{trecho}"
+                        messages = [
+                            {"role": "system", "content": sys_prompt},
+                            {"role": "user", "content": user_content},
+                        ]
+                        summary = llm.complete(
+                            messages,
+                            model=model,
+                            temperature=max(0.0, min(temperature, 0.2)),
+                            max_output_tokens=min(max_output_tokens, 220),
+                        )
+                        sections.append(f"### {titulo}\n{summary.strip()}")
+
+                    for c in padrao:
+                        titulo = c.get("tipo") or c.get("titulo") or "Cláusula"
+                        trecho = (c.get("texto_origem") or c.get("desvio") or "").strip()
+                        sys_prompt = (
+                            "Você é um analista jurídico. Resuma cada cláusula de forma OBJETIVA, "
+                            "SEM inventar informações. USE APENAS o texto fornecido da cláusula. "
+                            "Se algo não estiver no texto, escreva 'não informado'. Formato EXATO:\n"
+                            "- Obrigações: <texto>\n- Condições: <texto>\n- Penalidades: <texto>\n- Riscos: <texto>\n"
+                        )
+                        user_content = f"Cláusula: {titulo}\nTexto da cláusula:\n{trecho}"
+                        messages = [
+                            {"role": "system", "content": sys_prompt},
+                            {"role": "user", "content": user_content},
+                        ]
+                        summary = llm.complete(
+                            messages,
+                            model=model,
+                            temperature=max(0.0, min(temperature, 0.2)),
+                            max_output_tokens=min(max_output_tokens, 200),
+                        )
+                        sections.append(f"### {titulo}\n{summary.strip()}")
+
+                    clause_summary_md = "\n\n".join(sections)
+                    st.session_state["resumo_por_clausulas"] = clause_summary_md
+                    st.success("Resumo por cláusulas gerado.")
+                except Exception as e:
+                    st.error(f"Falha ao gerar resumo por cláusulas: {e}")
+
+        if st.session_state.get("resumo_por_clausulas"):
+            st.markdown("**Resumo por cláusulas (objetivo)**")
+            st.markdown(st.session_state.get("resumo_por_clausulas"))
+            st.download_button(
+                label="Baixar resumo por cláusulas (.md)",
+                data=st.session_state.get("resumo_por_clausulas"),
+                file_name="resumo_por_clausulas.md",
+                mime="text/markdown",
+            )
 
         if st.session_state.get("resumo_detalhado"):
             st.markdown("**Resumo detalhado**")
             st.write(st.session_state.get("resumo_detalhado"))
+            st.download_button(
+                label="Baixar resumo detalhado (.md)",
+                data=st.session_state.get("resumo_detalhado"),
+                file_name="resumo_detalhado.md",
+                mime="text/markdown",
+            )
 
 
 def render_qa_section(text: str, llm: GroqLLM, model: str, temperature: float, max_output_tokens: int):
@@ -376,12 +539,12 @@ def main():
     authenticator.logout("Sair", location="sidebar")
     st.sidebar.success(f"Logado como: {name}")
 
-    api_key, model, temperature, max_output_tokens = sidebar_config()
+    provider, api_key, model, temperature, max_output_tokens, max_chunks = sidebar_config()
 
     if not api_key:
-        st.info("Informe sua GROQ API Key nas configurações para usar a IA.")
+        st.info("Informe sua API Key do provedor selecionado nas configurações para usar a IA.")
 
-    llm = GroqLLM(api_key=api_key)
+    llm = GroqLLM(api_key=api_key) if provider == "Groq" else GeminiLLM(api_key=api_key)
     text = render_upload_and_preview()
 
     if text:
@@ -398,12 +561,25 @@ def main():
         if st.button("Analisar contrato", type="primary"):
             with st.spinner("Analisando contrato com IA (Groq)..."):
                 try:
+                    # Barra de progresso para contratos longos
+                    progress_bar = st.progress(0)
+                    def _progress(done: int, total: int):
+                        try:
+                            frac = 0.0
+                            if total > 0:
+                                frac = min(1.0, done / total)
+                            progress_bar.progress(frac)
+                        except Exception:
+                            pass
+
                     results = analyze_contract(
                         text,
                         llm,
                         model=model,
                         temperature=temperature,
                         max_output_tokens=max_output_tokens,
+                        max_chunks=max_chunks,
+                        progress_hook=_progress,
                     )
                     st.session_state["analysis_results"] = results
                     st.success("Análise concluída.")
