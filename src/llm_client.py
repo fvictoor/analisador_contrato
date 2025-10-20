@@ -93,12 +93,9 @@ class GeminiLLM:
     def _candidate_models(self, model: str) -> List[str]:
         # Gera alternativas conhecidas para evitar 404/método não suportado em v1beta
         aliases = {
-            # Antigos → Novos sugeridos
-            "gemini-1.5-flash": ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-1.5-flash-001"],
-            "gemini-1.5-pro": ["gemini-2.5-pro", "gemini-1.5-pro-001"],
-            # Novos → Alternativas próximas
-            "gemini-2.5-flash-lite": ["gemini-2.5-flash", "gemini-1.5-flash"],
-            "gemini-2.5-flash": ["gemini-2.5-flash-lite", "gemini-1.5-flash"],
+            "gemini-2.5-flash-lite": ["gemini-2.5-flash-lite", "gemini-2.5-flash-lite"],
+            "gemini-2.5-flash": ["gemini-2.5-flash", "gemini-2.5-flash"],
+            "gemini-2.5-pro": ["gemini-2.5-pro", "gemini-2.5-pro"],
         }
         candidates = [model]
         candidates += aliases.get(model, [])
@@ -107,7 +104,7 @@ class GeminiLLM:
     def complete(
         self,
         messages: List[Dict[str, str]],
-        model: str = "gemini-1.5-flash",
+        model: str = "gemini-2.5-flash-lite",
         temperature: float = 0.2,
         max_output_tokens: int = 2000,
     ) -> str:
