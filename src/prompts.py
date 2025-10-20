@@ -24,7 +24,7 @@ def build_extraction_user_prompt(contract_text: str) -> str:
     return (
         "Leia o contrato a seguir e produza um objeto JSON com os campos: "
         "'datas_vencimento' (lista de objetos: descricao, data_iso, texto_origem), "
-        "'valores_multas' (lista: tipo, valor_monetario, moeda, percentual, condicao, texto_origem), "
+        "'valores_multas' (lista: tipo, valor, moeda, percentual, condicao, texto_origem), "
         "'partes' (lista: nome, tipo(pessoa física/jurídica), papel, documentos), "
         "'clausulas_comprometedoras' (lista: titulo, risco(descrição), parte_afetada, gravidade(baixo/médio/alto), texto_origem), "
         "'clausulas_padrao' (lista: tipo, presente(true/false), desvio(descrição se houver), texto_origem), "
