@@ -201,7 +201,9 @@ def analyze_contract(
         if summaries:
             aggregated["resumo_juridico"] = _clean_summary_text("\n\n".join(summaries)[:4000])
 
-        return _normalize_values_multas(_ensure_schema(aggregated))
+        aggregated = _ensure_schema(aggregated)
+        aggregated["partes"] = _normalize_partes(aggregated.get("partes", []))
+        return _normalize_values_multas(aggregated)
 
     # Contratos pequenos: comportamento original
     messages = [
@@ -224,6 +226,8 @@ def analyze_contract(
     # Limpeza do resumo para legibilidade
     data["resumo_juridico"] = _clean_summary_text(data.get("resumo_juridico", ""))
 
+    # Normalização de partes para deduplicação e documentos legíveis
+    data["partes"] = _normalize_partes(data.get("partes", []))
     return _normalize_values_multas(data)
 
 
@@ -318,3 +322,155 @@ def _is_empty_result(data: Dict[str, Any]) -> bool:
         ])
     except Exception:
         return True
+
+
+def _normalize_partes(items):
+    """Deduplica e normaliza a lista de partes envolvidas.
+    - Agrupa por nome normalizado (case-insensitive, espaços colapsados)
+    - Agrega papéis únicos em uma string separada por vírgulas
+    - Escolhe o tipo mais frequente (ou o primeiro não-vazio)
+    - Converte 'documentos' em string legível, evitando [object Object]
+    """
+    try:
+        parts = items or []
+        by_name = {}
+        def norm_name(n):
+            if not n:
+                return ""
+            return re.sub(r"\s+", " ", str(n)).strip().lower()
+        def doc_to_str(doc):
+            try:
+                if doc is None:
+                    return ""
+                if isinstance(doc, str):
+                    return doc
+                if isinstance(doc, (int, float)):
+                    return str(doc)
+                if isinstance(doc, dict):
+                    # Campos comuns
+                    tipo = doc.get("tipo")
+                    numero = doc.get("numero")
+                    desc = doc.get("descricao")
+                    base = ", ".join([x for x in [tipo, numero, desc] if x])
+                    return base or json.dumps(doc, ensure_ascii=False)
+                if isinstance(doc, (list, tuple)):
+                    return "; ".join([doc_to_str(x) for x in doc if x])
+                return json.dumps(doc, ensure_ascii=False)
+            except Exception:
+                return str(doc)
+        for it in parts:
+            nome = it.get("nome")
+            nkey = norm_name(nome)
+            rec = by_name.get(nkey)
+            tipo = (it.get("tipo") or "").strip()
+            papel = (it.get("papel") or "").strip()
+            documentos = it.get("documentos")
+            doc_str = doc_to_str(documentos)
+            if not rec:
+                rec = {
+                    "nome": (str(nome).strip() if nome else "-"),
+                    "tipos": [],
+                    "papeis": set(),
+                    "docs": [],
+                }
+                by_name[nkey] = rec
+            if tipo:
+                rec["tipos"].append(tipo)
+            if papel:
+                rec["papeis"].add(papel)
+            if doc_str:
+                rec["docs"].append(doc_str)
+        result = []
+        for nkey, rec in by_name.items():
+            tipos = [t for t in rec.get("tipos", []) if t]
+            # tipo mais frequente ou primeiro
+            tipo_final = tipos[0] if not tipos else max(set(tipos), key=tipos.count)
+            papeis = sorted(list(rec.get("papeis", set())))
+            docs = [d for d in rec.get("docs", []) if d]
+            result.append({
+                "nome": rec.get("nome", "-"),
+                "tipo": tipo_final or "-",
+                "papel": ", ".join(papeis) if papeis else "-",
+                "documentos": "; ".join(docs) if docs else "-",
+            })
+        # ordenar por nome
+        result.sort(key=lambda x: x.get("nome", ""))
+        return result
+    except Exception:
+        return items or []
+
+# Atualiza pontos de retorno para aplicar normalização de partes
+def _normalize_partes(items):
+    """Deduplica e normaliza a lista de partes envolvidas.
+    - Agrupa por nome normalizado (case-insensitive, espaços colapsados)
+    - Agrega papéis únicos em uma string separada por vírgulas
+    - Escolhe o tipo mais frequente (ou o primeiro não-vazio)
+    - Converte 'documentos' em string legível, evitando [object Object]
+    """
+    try:
+        parts = items or []
+        by_name = {}
+        def norm_name(n):
+            if not n:
+                return ""
+            return re.sub(r"\s+", " ", str(n)).strip().lower()
+        def doc_to_str(doc):
+            try:
+                if doc is None:
+                    return ""
+                if isinstance(doc, str):
+                    return doc
+                if isinstance(doc, (int, float)):
+                    return str(doc)
+                if isinstance(doc, dict):
+                    # Campos comuns
+                    tipo = doc.get("tipo")
+                    numero = doc.get("numero")
+                    desc = doc.get("descricao")
+                    base = ", ".join([x for x in [tipo, numero, desc] if x])
+                    return base or json.dumps(doc, ensure_ascii=False)
+                if isinstance(doc, (list, tuple)):
+                    return "; ".join([doc_to_str(x) for x in doc if x])
+                return json.dumps(doc, ensure_ascii=False)
+            except Exception:
+                return str(doc)
+        for it in parts:
+            nome = it.get("nome")
+            nkey = norm_name(nome)
+            rec = by_name.get(nkey)
+            tipo = (it.get("tipo") or "").strip()
+            papel = (it.get("papel") or "").strip()
+            documentos = it.get("documentos")
+            doc_str = doc_to_str(documentos)
+            if not rec:
+                rec = {
+                    "nome": (str(nome).strip() if nome else "-"),
+                    "tipos": [],
+                    "papeis": set(),
+                    "docs": [],
+                }
+                by_name[nkey] = rec
+            if tipo:
+                rec["tipos"].append(tipo)
+            if papel:
+                rec["papeis"].add(papel)
+            if doc_str:
+                rec["docs"].append(doc_str)
+        result = []
+        for nkey, rec in by_name.items():
+            tipos = [t for t in rec.get("tipos", []) if t]
+            # tipo mais frequente ou primeiro
+            tipo_final = tipos[0] if not tipos else max(set(tipos), key=tipos.count)
+            papeis = sorted(list(rec.get("papeis", set())))
+            docs = [d for d in rec.get("docs", []) if d]
+            result.append({
+                "nome": rec.get("nome", "-"),
+                "tipo": tipo_final or "-",
+                "papel": ", ".join(papeis) if papeis else "-",
+                "documentos": "; ".join(docs) if docs else "-",
+            })
+        # ordenar por nome
+        result.sort(key=lambda x: x.get("nome", ""))
+        return result
+    except Exception:
+        return items or []

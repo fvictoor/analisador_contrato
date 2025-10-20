@@ -93,13 +93,30 @@ class GeminiLLM:
     def _candidate_models(self, model: str) -> List[str]:
         # Gera alternativas conhecidas para evitar 404/método não suportado em v1beta
         aliases = {
-            "gemini-2.5-flash-lite": ["gemini-2.5-flash-lite", "gemini-2.5-flash-lite"],
-            "gemini-2.5-flash": ["gemini-2.5-flash", "gemini-2.5-flash"],
-            "gemini-2.5-pro": ["gemini-2.5-pro", "gemini-2.5-pro"],
+            # Família 2.5 flash
+            "gemini-2.5-flash-lite": ["gemini-2.5-flash", "gemini-1.5-flash"],
+            "gemini-2.5-flash": ["gemini-2.5-flash-lite", "gemini-1.5-flash"],
+            # Família 2.5 pro (nem sempre disponível em v1beta)
+            "gemini-2.5-pro": ["gemini-1.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-1.5-flash"],
+            # Família 1.5 (removidos sufixos -001)
+            "gemini-1.5-flash": ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
+            "gemini-1.5-pro": ["gemini-2.5-pro", "gemini-1.5-flash"],
         }
-        candidates = [model]
-        candidates += aliases.get(model, [])
-        return candidates
+        # Lista candidatos e tenta filtrar por modelos realmente disponíveis
+        cands = [model] + aliases.get(model, [])
+        try:
+            models = list(genai.list_models())
+            names = {getattr(m, "name", "") for m in models}
+            supported = {
+                getattr(m, "name", "")
+                for m in models
+                if (getattr(m, "supported_generation_methods", []) or [])
+                and ("generateContent" in getattr(m, "supported_generation_methods", []) or "generate_content" in getattr(m, "supported_generation_methods", []))
+            }
+            filtered = [c for c in cands if (c in supported) or (c in names)]
+            return filtered if filtered else cands
+        except Exception:
+            return cands
 
     def complete(
         self,
