@@ -39,6 +39,7 @@ class GroqLLM:
         model: str = "llama3-8b-8192",
         temperature: float = 0.2,
         max_output_tokens: int = 2000,
+        response_mime_type: Optional[str] = None,
     ) -> str:
         self.ensure_client()
         # Retry/backoff básico para rate limit/TPM
@@ -90,30 +91,76 @@ class GeminiLLM:
         if not self._configured:
             raise RuntimeError("Gemini API Key não configurada ou biblioteca ausente.")
 
+    def _extract_text(self, resp) -> str:
+        try:
+            return getattr(resp, "text", "")
+        except Exception:
+            pass
+        try:
+            data = resp.to_dict() if hasattr(resp, "to_dict") else None
+            if data:
+                cands = data.get("candidates") or []
+                for c in cands:
+                    content = c.get("content") or {}
+                    for p in content.get("parts") or []:
+                        t = p.get("text")
+                        if t:
+                            return t
+            cands = getattr(resp, "candidates", []) or []
+            for c in cands:
+                content = getattr(c, "content", None)
+                parts = getattr(content, "parts", []) if content else []
+                for p in parts:
+                    t = getattr(p, "text", None)
+                    if t:
+                        return t
+        except Exception:
+            pass
+        return ""
+
     def _candidate_models(self, model: str) -> List[str]:
         # Gera alternativas conhecidas para evitar 404/método não suportado em v1beta
         aliases = {
             # Família 2.5 flash
             "gemini-2.5-flash-lite": ["gemini-2.5-flash", "gemini-1.5-flash"],
             "gemini-2.5-flash": ["gemini-2.5-flash-lite", "gemini-1.5-flash"],
-            # Família 2.5 pro (nem sempre disponível em v1beta)
+            # Família 2.5 pro
             "gemini-2.5-pro": ["gemini-1.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-1.5-flash"],
-            # Família 1.5 (removidos sufixos -001)
+            # Família 1.5
             "gemini-1.5-flash": ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
             "gemini-1.5-pro": ["gemini-2.5-pro", "gemini-1.5-flash"],
+            # Família 2.0 e aliases "latest"
+            "gemini-2.0-flash": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-1.5-flash"],
+            "gemini-2.0-flash-exp": ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+            "gemini-2.0-flash-lite": ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
+            "gemini-2.0-flash-lite-preview": ["gemini-2.0-flash-lite", "gemini-2.5-flash-lite"],
+            "gemini-2.0-pro-exp": ["gemini-2.5-pro", "gemini-2.5-flash"],
+            "gemini-2.0-flash-thinking-exp": ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+            "gemini-2.0-flash-preview-image-generation": ["gemini-2.0-flash", "gemini-2.5-flash"],
+            "gemini-2.0-flash-exp-image-generation": ["gemini-2.0-flash", "gemini-2.5-flash"],
+            "gemini-2.5-flash-preview-tts": ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+            "gemini-2.5-pro-preview-tts": ["gemini-2.5-pro", "gemini-2.5-flash"],
+            "gemini-flash-latest": ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"],
+            "gemini-flash-lite-latest": ["gemini-2.5-flash-lite", "gemini-2.0-flash-lite", "gemini-2.5-flash"],
+            "gemini-pro-latest": ["gemini-2.5-pro", "gemini-2.0-pro-exp", "gemini-2.5-flash"],
         }
         # Lista candidatos e tenta filtrar por modelos realmente disponíveis
         cands = [model] + aliases.get(model, [])
         try:
             models = list(genai.list_models())
-            names = {getattr(m, "name", "") for m in models}
-            supported = {
+            names_full = [getattr(m, "name", "") for m in models]
+            names_simplified = {n.split("/")[-1] for n in names_full if n}
+            supported_full = [
                 getattr(m, "name", "")
                 for m in models
                 if (getattr(m, "supported_generation_methods", []) or [])
                 and ("generateContent" in getattr(m, "supported_generation_methods", []) or "generate_content" in getattr(m, "supported_generation_methods", []))
-            }
-            filtered = [c for c in cands if (c in supported) or (c in names)]
+            ]
+            supported_simplified = {n.split("/")[-1] for n in supported_full if n}
+            filtered = [
+                c for c in cands
+                if (c in names_simplified) or (c in supported_simplified)
+            ]
             return filtered if filtered else cands
         except Exception:
             return cands
@@ -124,6 +171,7 @@ class GeminiLLM:
         model: str = "gemini-2.5-flash-lite",
         temperature: float = 0.2,
         max_output_tokens: int = 2000,
+        response_mime_type: Optional[str] = None,
     ) -> str:
         self.ensure_client()
         # Concatena mensagens com rótulos de papel para simular histórico
@@ -138,14 +186,27 @@ class GeminiLLM:
         for model_to_use in self._candidate_models(model):
             try:
                 model_obj = genai.GenerativeModel(model_to_use)
+                gen_cfg = {
+                    "temperature": float(max(0.0, min(1.0, temperature))),
+                    "max_output_tokens": int(max_output_tokens),
+                }
+                if response_mime_type:
+                    gen_cfg["response_mime_type"] = response_mime_type
                 resp = model_obj.generate_content(
                     prompt,
-                    generation_config={
-                        "temperature": float(max(0.0, min(1.0, temperature))),
-                        "max_output_tokens": int(max_output_tokens),
-                    },
+                    generation_config=gen_cfg,
                 )
-                return getattr(resp, "text", "") or ""
+                text_out = self._extract_text(resp)
+                if text_out and text_out.strip():
+                    return text_out.strip()
+                # Se vier vazio ou sem Parts, inspeciona finish_reason e tenta próximo candidato
+                try:
+                    c0 = getattr(resp, "candidates", [None])[0]
+                    finish_reason = getattr(c0, "finish_reason", None)
+                except Exception:
+                    finish_reason = None
+                last_error = RuntimeError(f"Empty content from model '{model_to_use}', finish_reason={finish_reason}")
+                continue
             except Exception as e:
                 last_error = e
                 msg = str(e).lower()
@@ -158,12 +219,27 @@ class GeminiLLM:
                 ):
                     continue
                 # Em caso de rate/quota, pequeno backoff e tenta novamente mesmo modelo
-                if ("rate" in msg or "quota" in msg or "429" in msg):
-                    time.sleep(2)
-                    continue
-                # Outros erros: interrompe
-                break
-        # Se nenhuma tentativa funcionou, repropaga última exceção
+                if "rate" in msg or "quota" in msg or "limit" in msg:
+                    time.sleep(0.8)
+                    try:
+                        model_obj = genai.GenerativeModel(model_to_use)
+                        gen_cfg = {
+                            "temperature": float(max(0.0, min(1.0, temperature))),
+                            "max_output_tokens": int(max_output_tokens),
+                        }
+                        if response_mime_type:
+                            gen_cfg["response_mime_type"] = response_mime_type
+                        resp = model_obj.generate_content(
+                            prompt,
+                            generation_config=gen_cfg,
+                        )
+                        text_out = self._extract_text(resp)
+                        if text_out and text_out.strip():
+                            return text_out.strip()
+                        continue
+                    except Exception:
+                        continue
+                continue
         if last_error:
             raise last_error
         return ""

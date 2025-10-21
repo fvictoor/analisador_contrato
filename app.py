@@ -53,37 +53,27 @@ def sidebar_config():
             ),
         )
         options_models = [
-            "gemini-2.5-flash-lite",
             "gemini-2.5-flash",
-            "gemini-2.5-pro"
+            "gemini-2.5-pro",
+            "gemini-2.0-flash-exp",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-exp-image-generation",
+            "gemini-2.0-flash-lite",
+            "gemini-2.0-flash-preview-image-generation",
+            "gemini-2.0-flash-lite-preview",
+            "gemini-2.0-pro-exp",
+            "gemini-2.0-flash-thinking-exp",
+            "gemini-2.5-flash-preview-tts",
+            "gemini-2.5-pro-preview-tts",
+            "gemini-flash-latest",
+            "gemini-flash-lite-latest",
+            "gemini-pro-latest",
+            "gemini-2.5-flash-lite",
         ]
-        default_model = "gemini-2.5-flash-lite"
+        default_model = "gemini-2.5-flash"
         model_help = (
-            "Modelos Gemini (v1beta). Se ocorrer 404/not supported, tente outra variante ou use o botão de listagem."
+            "Modelos Gemini disponíveis. Alguns são voltados a TTS/Imagem — para análise textual, o app tenta fallback automático para um modelo de texto compatível."
         )
-        try:
-            import google.generativeai as genai  # opcional
-            if api_key:
-                genai.configure(api_key=api_key)
-                if st.sidebar.button("Listar modelos disponíveis (Gemini)", help="Consulta modelos na sua conta e métodos suportados"):
-                    with st.spinner("Consultando modelos do Gemini..."):
-                        try:
-                            models = list(genai.list_models())
-                            supports = []
-                            for m in models:
-                                name = getattr(m, "name", "")
-                                methods = set(getattr(m, "supported_generation_methods", []) or [])
-                                supported = "generateContent" in methods or "generate_content" in methods
-                                supports.append((name, supported))
-                            st.sidebar.success("Modelos consultados. Veja abaixo os que suportam geração de conteúdo.")
-                            st.sidebar.markdown("**Modelos compatíveis**")
-                            for name, ok in supports:
-                                if ok:
-                                    st.sidebar.write(f"• {name}")
-                        except Exception as e:
-                            st.sidebar.error(f"Falha ao listar modelos: {e}")
-        except Exception:
-            pass
 
     model = st.sidebar.selectbox(
         "Modelo LLM",
@@ -241,7 +231,7 @@ def render_analysis_sections(
         if not datas:
             st.write("Nenhuma data encontrada.")
         else:
-            st.dataframe(datas, use_container_width=True)
+            st.dataframe(datas, width='stretch')
 
             st.divider()
             st.subheader("Exportar para calendário")
@@ -298,7 +288,8 @@ def render_analysis_sections(
         st.subheader("Valores e Multas")
         valores = results.get("valores_multas", [])
         if valores:
-            st.dataframe(valores, use_container_width=True)
+            valores_sem_moeda = [{k: v for k, v in it.items() if k != "moeda"} for it in valores]
+            st.dataframe(valores_sem_moeda, width='stretch')
         else:
             st.write("Nenhum valor/multa encontrado.")
 
@@ -306,7 +297,7 @@ def render_analysis_sections(
         st.subheader("Partes envolvidas")
         partes = results.get("partes", [])
         if partes:
-            st.dataframe(partes, use_container_width=True)
+            st.dataframe(partes, width='stretch')
         else:
             st.write("Partes não identificadas claramente.")
 
@@ -314,7 +305,7 @@ def render_analysis_sections(
         st.subheader("Cláusulas que podem comprometer as partes")
         comp = results.get("clausulas_comprometedoras", [])
         if comp:
-            st.dataframe(comp, use_container_width=True)
+            st.dataframe(comp, width='stretch')
         else:
             st.write("Nenhuma cláusula potencialmente comprometedora destacada.")
 
@@ -322,7 +313,7 @@ def render_analysis_sections(
         st.subheader("Cláusulas padrão e desvios")
         padrao = results.get("clausulas_padrao", [])
         if padrao:
-            st.dataframe(padrao, use_container_width=True)
+            st.dataframe(padrao, width='stretch')
         else:
             st.write("Nenhuma cláusula padrão encontrada ou analisada.")
 

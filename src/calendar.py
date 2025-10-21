@@ -77,7 +77,7 @@ def make_outlook_links_from_dates(
     timezone: str = "America/Sao_Paulo",
 ) -> List[Dict]:
     """Gera links de composição de evento para Outlook Web (Live) e Office/M365.
-    Usamos evento de dia inteiro quando só há a data.
+    Usamos evento de dia inteiro quando só há a hora mencionada.
     """
     links = []
     for item in datas_vencimento:

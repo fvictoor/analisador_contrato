@@ -137,7 +137,7 @@ def analyze_contract(
                 {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
                 {"role": "user", "content": build_extraction_user_prompt(ch)},
             ]
-            output = llm.complete(messages, model=model, temperature=temperature, max_output_tokens=max_output_tokens)
+            output = llm.complete(messages, model=model, temperature=temperature, max_output_tokens=max_output_tokens, response_mime_type="application/json")
             data_chunk = _safe_json_loads(_clean_output(output))
 
             if _is_empty_result(data_chunk):
@@ -145,7 +145,7 @@ def analyze_contract(
                     {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT + " Responda SOMENTE com JSON válido, sem markdown e sem texto fora."},
                     {"role": "user", "content": build_extraction_user_prompt(ch) + "\nRetorne apenas o JSON começando com '{' e terminando com '}'."},
                 ]
-                output2 = llm.complete(strict_messages, model=model, temperature=max(0.0, temperature - 0.1), max_output_tokens=max_output_tokens)
+                output2 = llm.complete(strict_messages, model=model, temperature=max(0.0, temperature - 0.1), max_output_tokens=max_output_tokens, response_mime_type="application/json")
                 data_chunk = _safe_json_loads(_clean_output(output2))
 
             data_chunk = _ensure_schema(data_chunk)
@@ -203,14 +203,16 @@ def analyze_contract(
 
         aggregated = _ensure_schema(aggregated)
         aggregated["partes"] = _normalize_partes(aggregated.get("partes", []))
-        return _normalize_values_multas(aggregated)
+        aggregated = _normalize_values_multas(aggregated)
+        aggregated = _expand_vencimento_dates(aggregated)
+        return aggregated
 
     # Contratos pequenos: comportamento original
     messages = [
         {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
         {"role": "user", "content": build_extraction_user_prompt(contract_text)},
     ]
-    output = llm.complete(messages, model=model, temperature=temperature, max_output_tokens=max_output_tokens)
+    output = llm.complete(messages, model=model, temperature=temperature, max_output_tokens=max_output_tokens, response_mime_type="application/json")
     data = _safe_json_loads(_clean_output(output))
 
     # Se resultado vazio ou sem as principais listas, tenta uma segunda chamada mais estrita
@@ -219,7 +221,7 @@ def analyze_contract(
             {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT + " Responda SOMENTE com JSON válido, sem markdown e sem texto fora."},
             {"role": "user", "content": build_extraction_user_prompt(contract_text) + "\nRetorne apenas o JSON começando com '{' e terminando com '}'."},
         ]
-        output2 = llm.complete(strict_messages, model=model, temperature=max(0.0, temperature - 0.1), max_output_tokens=max_output_tokens)
+        output2 = llm.complete(strict_messages, model=model, temperature=max(0.0, temperature - 0.1), max_output_tokens=max_output_tokens, response_mime_type="application/json")
         data = _safe_json_loads(_clean_output(output2))
 
     data = _ensure_schema(data)
@@ -228,20 +230,26 @@ def analyze_contract(
 
     # Normalização de partes para deduplicação e documentos legíveis
     data["partes"] = _normalize_partes(data.get("partes", []))
-    return _normalize_values_multas(data)
+    data = _normalize_values_multas(data)
+    data = _expand_vencimento_dates(data)
+    return data
 
 
 def _parse_brl_amount(text: str) -> Optional[float]:
     """Extrai o primeiro valor monetário no padrão brasileiro (R$ 1.234,56) do texto.
+    Aceita espaços opcionais no valor (ex.: "R$ 2.000.000, 00") e também o símbolo "R" sem "$".
     Retorna float ou None se não encontrado.
     """
     if not text:
         return None
-    # Padrões comuns: "R$ 1.234,56", "R$1.234", "R$ 123,45"
-    m = re.search(r"R\$\s*([\d\.]+(?:,[\d]{2})?)", text)
+    # Padrões comuns: "R$ 1.234,56", "R$1.234", "R$ 123,45" e variações com espaços: "R$ 1.234, 56"
+    # Aceita também "R 100.000,00" e "R2.000.000,00" (sem o cifrão)
+    m = re.search(r"R\$?\s*([\d\.\s]+(?:,\s*\d{2})?)", text)
     if not m:
         return None
     raw = m.group(1)
+    # Remover espaços dentro do número antes de normalizar
+    raw = re.sub(r"\s+", "", raw)
     # Converter para float: remover pontos (milhares) e trocar vírgula por ponto
     normalized = raw.replace(".", "").replace(",", ".")
     try:
@@ -270,15 +278,11 @@ def _normalize_values_multas(data: Dict[str, Any]) -> Dict[str, Any]:
             moeda = it.get("moeda")
             texto = it.get("texto_origem", "")
 
-            # Se não há valor e há texto com R$, tentar extrair
-            if (valor is None or valor == "" or str(valor).lower() == "none") and "R$" in texto:
-                parsed = _parse_brl_amount(texto)
-                if parsed is not None:
-                    it["valor_monetario"] = _format_brl(parsed)
-                    it["moeda"] = moeda or "BRL"
-                else:
-                    # mantém None se não foi possível
-                    pass
+            # Tentar extrair sempre que houver texto; parser só reconhece padrões com prefixo "R" (com ou sem "$")
+            parsed = _parse_brl_amount(texto)
+            if parsed is not None:
+                it["valor_monetario"] = _format_brl(parsed)
+                it["moeda"] = moeda or "BRL"
             else:
                 # Se já veio número, formatar
                 try:
@@ -474,3 +478,78 @@ def _normalize_partes(items):
         return result
     except Exception:
         return items or []
+
+
+def _expand_vencimento_dates(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Expande datas de vencimento quando o texto menciona "dia X de cada mês"
+    e lista meses com um ano (ex.: "abril, maio, junho... de 2025").
+    Cria uma entrada por mês com 'data_iso' = YYYY-MM-X.
+    """
+    try:
+        items = data.get("datas_vencimento", []) or []
+        if not items:
+            return data
+
+        months_map = {
+            "janeiro": 1, "fevereiro": 2,
+            "março": 3, "marco": 3,
+            "abril": 4, "maio": 5, "junho": 6, "julho": 7, "agosto": 8,
+            "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12,
+        }
+
+        new_items = list(items)
+        seen = {(i.get("descricao"), i.get("data_iso")) for i in items}
+
+        for it in items:
+            text = f"{it.get('descricao', '')} {it.get('texto_origem', '')}".lower()
+            # Encontrar o dia
+            mday = re.search(r"dia\s+(\d{1,2})", text)
+            if not mday:
+                continue
+            day = int(mday.group(1))
+
+            # Capturar ano próximo a menções de meses
+            myear = re.search(r"(de\s*)?(\d{4})", text)
+            year = int(myear.group(2)) if myear else None
+            if not year:
+                # sem ano explícito não expandimos
+                continue
+
+            # Encontrar todos os meses citados
+            found_months = []
+            for name, num in months_map.items():
+                if re.search(rf"\b{name}\b", text):
+                    found_months.append(num)
+
+            # Também suportar intervalos "de abril a agosto"
+            # Procura "de <mes> a <mes>"
+            for start_name in months_map.keys():
+                m_range = re.search(rf"{start_name}\s*(?:a|até)\s*([a-zç]+)", text)
+                if m_range:
+                    end_name = m_range.group(1)
+                    if end_name in months_map:
+                        start_m = months_map[start_name]
+                        end_m = months_map[end_name]
+                        if start_m <= end_m:
+                            found_months.extend(list(range(start_m, end_m + 1)))
+
+            if not found_months:
+                continue
+
+            # Deduplicar e criar entradas
+            for m in sorted(set(found_months)):
+                iso = f"{year}-{m:02d}-{day:02d}"
+                key = (it.get("descricao"), iso)
+                if key in seen:
+                    continue
+                new_items.append({
+                    "descricao": it.get("descricao") or f"Vencimento mensal dia {day}",
+                    "data_iso": iso,
+                    "texto_origem": it.get("texto_origem") or it.get("descricao") or "",
+                })
+                seen.add(key)
+
+        data["datas_vencimento"] = new_items
+        return data
+    except Exception:
+        return data
